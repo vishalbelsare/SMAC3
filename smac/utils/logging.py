@@ -1,52 +1,49 @@
+from __future__ import annotations
+
 import logging
+import logging.config
+from pathlib import Path
+
+import yaml
+from typing_extensions import Literal
+
+import smac
+
+__copyright__ = "Copyright 2025, Leibniz University Hanover, Institute of AI"
+__license__ = "3-clause BSD"
 
 
-class PickableLoggerAdapter(object):
-    def __init__(self, name):
-        self.name = name
-        self.logger = logging.getLogger(self.name)
+def setup_logging(
+    level: int | Path | Literal[False] | None = False,
+) -> None:
+    """Sets up the logging configuration for all modules.
 
-    def __getstate__(self):
-        """
-        Method is called when pickle dumps an object.
-        Returns
-        -------
-        Dictionary, representing the object state to be pickled. Ignores
-        the self.logger field and only returns the logger name.
-        """
-        return {'name': self.name}
+    Parameters
+    ----------
+    level : int | Path | Literal[False] | None, defaults to None
+        An integer representing the logging level. An custom logging configuration can be used when passing a path.
+        If False, no logging setup is performed.
+    """
+    if level is False:
+        return
 
-    def __setstate__(self, state):
-        """
-        Method is called when pickle loads an object. Retrieves the name and
-        creates a logger.
-        Parameters
-        ----------
-        state - dictionary, containing the logger name.
-        """
-        self.name = state['name']
-        self.logger = logging.getLogger(self.name)
+    if isinstance(level, Path):
+        log_filename = level
+    else:
+        path = Path() / smac.__file__
+        log_filename = path.parent / "logging.yml"
 
-    def debug(self, msg, *args, **kwargs):
-        self.logger.debug(msg, *args, **kwargs)
+    with (log_filename).open("r") as stream:
+        config = yaml.safe_load(stream)
 
-    def info(self, msg, *args, **kwargs):
-        self.logger.info(msg, *args, **kwargs)
+    if isinstance(level, int):
+        config["root"]["level"] = level
+        config["handlers"]["console"]["level"] = level
 
-    def warning(self, msg, *args, **kwargs):
-        self.logger.warning(msg, *args, **kwargs)
+    logging.config.dictConfig(config)
 
-    def error(self, msg, *args, **kwargs):
-        self.logger.error(msg, *args, **kwargs)
 
-    def exception(self, msg, *args, **kwargs):
-        self.logger.exception(msg, *args, **kwargs)
-
-    def critical(self, msg, *args, **kwargs):
-        self.logger.critical(msg, *args, **kwargs)
-
-    def log(self, level, msg, *args, **kwargs):
-        self.logger.log(level, msg, *args, **kwargs)
-
-    def isEnabledFor(self, level):
-        return self.logger.isEnabledFor(level)
+def get_logger(logger_name: str) -> logging.Logger:
+    """Get the logger by name."""
+    logger = logging.getLogger(logger_name)
+    return logger

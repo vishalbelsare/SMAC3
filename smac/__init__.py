@@ -1,8 +1,54 @@
-import sys
+import datetime
+import traceback
 
-if sys.version_info < (3,4):
-    raise ValueError("SMAC requires Python 3.4 or newer.")
+name = "SMAC3"
+package_name = "smac"
+author = (
+    "\tMarius Lindauer, Katharina Eggensperger, Matthias Feurer, André Biedenkapp, "
+    "Difan Deng,\n\tCarolin Benjamins, Tim Ruhkopf, René Sass and Frank Hutter"
+)
 
-from smac.__version__ import __version__
-AUTHORS = "Marius Lindauer, Matthias Feurer, Katharina Eggensperger, " \
-          "Aaron Klein, Stefan Falkner and Frank Hutter"
+author_email = "fh@cs.uni-freiburg.de"
+description = "SMAC3, a Python implementation of 'Sequential Model-based Algorithm Configuration'."
+url = "https://www.automl.org/"
+project_urls = {
+    "Documentation": "https://automl.github.io/SMAC3/latest",
+    "Source Code": "https://github.com/automl/SMAC3",
+}
+copyright = (
+    f"Copyright {datetime.date.today().strftime('%Y')}, Marius Lindauer, Katharina Eggensperger, "
+    "Matthias Feurer, André Biedenkapp, Difan Deng, Carolin Benjamins, Tim Ruhkopf, René Sass "
+    "and Frank Hutter"
+)
+version = "2.4.0"
+
+
+try:
+    from smac.callback.callback import Callback
+    from smac.facade import (
+        AlgorithmConfigurationFacade,
+        BlackBoxFacade,
+        HyperbandFacade,
+        HyperparameterOptimizationFacade,
+        MultiFidelityFacade,
+        MultiObjectiveFacade,
+        RandomFacade,
+    )
+    from smac.runhistory.runhistory import RunHistory
+    from smac.scenario import Scenario
+
+    __all__ = [
+        "Scenario",
+        "RunHistory",
+        "BlackBoxFacade",
+        "HyperparameterOptimizationFacade",
+        "MultiFidelityFacade",
+        "AlgorithmConfigurationFacade",
+        "RandomFacade",
+        "HyperbandFacade",
+        "MultiObjectiveFacade",
+        "Callback",
+    ]
+except ModuleNotFoundError as e:
+    print(e)
+    traceback.print_exc()

@@ -1,0 +1,351 @@
+from __future__ import annotations
+
+from typing import Any
+
+import copy
+import hashlib
+import json
+import random
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+from ConfigSpace import ConfigurationSpace
+
+from smac.constants import INITIAL_DESIGN_VALID_DIAGNOSTICS_MODES
+from smac.utils.logging import get_logger
+from smac.utils.numpyencoder import NumpyEncoder
+
+logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class Scenario:
+    """
+    The scenario manages environment variables and therefore gives context in which frame the optimization is performed.
+
+    Parameters
+    ----------
+    configspace : ConfigurationSpace
+        The configuration space from which to sample the configurations.
+    name : str | None, defaults to None
+        The name of the run. If no name is passed, SMAC generates a hash from the meta data.
+        Specify this argument to identify your run easily.
+    output_directory : Path, defaults to Path("smac3_output")
+        The directory in which to save the output. The files are saved in `./output_directory/name/seed`.
+    deterministic : bool, defaults to False
+        If True, only one seed is passed to the target function, assuming deterministic (noise-free) behavior.
+        Otherwise, multiple seeds are passed (if `n_seeds` > 1) to enable repeated evaluations.
+        For non-deterministic functions, users must specify intensification parameters
+        (e.g., `max_config_calls`, `n_seeds`) to ensure reliable performance estimates
+        and optionally model noise in the Gaussian Process surrogate.
+    objectives : str | list[str] | None, defaults to "cost"
+        The objective(s) to optimize. This argument is required for multi-objective optimization.
+    objective_weights : list[float] | None, defaults to None
+        Optional preference weights for multi-objective optimization.
+        Indicate the relative importance of each objective when aggregating them
+        (e.g., using MeanAggregationStrategy or ParEGO). Must be non-negative
+        and have the same length as the number of objectives in the scenario.
+    crash_cost : float | list[float], defaults to np.inf
+        Defines the cost for a failed trial. In case of multi-objective, each objective can be associated with
+        a different cost.
+    termination_cost_threshold : float | list[float], defaults to np.inf
+        Defines a cost threshold when the optimization should stop. In case of multi-objective, each objective *must* be
+        associated with a cost. The optimization stops when all objectives crossed the threshold.
+    walltime_limit : float, defaults to np.inf
+        The maximum time in seconds that SMAC is allowed to run.
+    cputime_limit : float, defaults to np.inf
+        The maximum CPU time in seconds that SMAC is allowed to run.
+    trial_walltime_limit : float | None, defaults to None
+        The maximum time in seconds that a trial is allowed to run. If not specified,
+        no constraints are enforced. Otherwise, the process will be spawned by pynisher.
+    trial_memory_limit : int | None, defaults to None
+        The maximum memory in MB that a trial is allowed to use. If not specified,
+        no constraints are enforced. Otherwise, the process will be spawned by pynisher.
+    n_trials : int, defaults to 100
+        The maximum number of trials (combination of configuration, seed, budget, and instance, depending on the task)
+        to run.
+    use_default_config: bool, defaults to False.
+        If True, the configspace's default configuration is evaluated in the initial design.
+        For historic benchmark reasons, this is False by default.
+        Notice, that this will result in n_configs + 1 for the initial design. Respecting n_trials,
+        this will result in one fewer evaluated configuration in the optimization.
+    initial_design_warmstart_mode : str, defaults to "additional"
+        Controls how configurations that are already in the runhistory before the first `ask()` call
+        (e.g. because they were passed via `tell()` for warmstarting, or because a previous run is being
+        continued) relate to the initial design's own configurations:
+        * ``"additional"``: The already-evaluated configurations are treated as pure extra information.
+          The initial design is not affected and still proposes its full, configured number of
+          configurations.
+        * ``"reduce_budget"``: The already-evaluated configurations count against the initial design's
+          budget. The initial design proposes only as many additional configurations as are still
+          missing to reach its originally configured number of configurations.
+        * ``"replace"``: The already-evaluated configurations are treated as the complete initial design.
+          The initial design does not propose any additional configurations of its own; SMAC moves on
+          directly to model-based optimization.
+    initial_design_diagnostics : str, defaults to "warn"
+        Controls early diagnostics on the initial design evaluations. Once every initial design
+        configuration has been evaluated at least once, SMAC can check whether the collected data
+        carries any feedback signal for the surrogate model:
+
+        * all configurations failed, i.e. the target function or pipeline is likely broken,
+        * some configurations failed, which is reported as a count so that the user can react, or
+        * all successful configurations share the same cost, i.e. the metric or the search space is
+          likely misconfigured (this can also be a legitimate plateau).
+
+        A configuration counts as failed only if none of its evaluations succeeded.
+
+        Possible values:
+
+        * ``"off"``: No diagnostics are performed. This is the historic behaviour.
+        * ``"warn"`` (default): A warning is logged for each detected case; the optimization
+          continues. Nothing but the log output changes compared to ``"off"``.
+        * ``"abort"``: A warning is logged and the optimization is stopped gracefully if the initial
+          design carries no feedback signal, i.e. if all configurations failed or all of them
+          perform identically. Partial failures are only ever warned about.
+    instances : list[str] | None, defaults to None
+        Names of the instances to use. If None, no instances are used.
+        Instances could be dataset names, seeds, subsets, etc.
+    instance_features : dict[str, list[float]] | None, defaults to None
+        Instances can be associated with features. For example, meta data of the dataset (mean, var, ...) can be
+        incorporated which are then further used to expand the training data of the surrogate model.
+    adaptive_capping: bool, defaults to False
+        Adaptive capping allows to preemptiveley cancel the evaluation of candidates as soon as their accumulative cost
+        exceed the cost of the current incumbent. If a runtime_cutoff is set, SMAC will allocate budgets that are capped
+        at the runtime_cutoff.
+    runtime_cutoff: int | None, defaults to None
+        A runtime cutoff can be set to limit the maximum runtime allowed for a single configuration to run solving
+        instances.
+    min_budget : float | int | None, defaults to None
+        The minimum budget (epochs, subset size, number of instances, ...) that is used for the optimization.
+        Use this argument if you use multi-fidelity or instance optimization.
+    max_budget : float | int | None, defaults to None
+        The maximum budget (epochs, subset size, number of instances, ...) that is used for the optimization.
+        Use this argument if you use multi-fidelity or instance optimization.
+    seed : int, defaults to 0
+        The seed is used to make results reproducible. If seed is -1, SMAC will generate a random seed.
+    n_workers : int, defaults to 1
+        The number of workers to use for parallelization. If `n_workers` is greather than 1, SMAC will use
+        Dask to parallelize the optimization.
+    """
+
+    # General
+    configspace: ConfigurationSpace
+    name: str | None = None
+    output_directory: Path = Path("smac3_output")
+    deterministic: bool = False
+
+    # Objectives
+    objectives: str | list[str] = "cost"
+    objective_weights: list[float] | None = None
+    crash_cost: float | list[float] = np.inf
+    termination_cost_threshold: float | list[float] = np.inf
+
+    # Limitations
+    walltime_limit: float = np.inf
+    cputime_limit: float = np.inf
+    trial_walltime_limit: float | None = None
+    trial_memory_limit: int | None = None
+    n_trials: int = 100
+    use_default_config: bool = False
+    initial_design_warmstart_mode: str = "additional"
+    initial_design_diagnostics: str = "warn"
+
+    # Algorithm Configuration
+    instances: list[str] | None = None
+    instance_features: dict[str, list[float]] | None = None
+    adaptive_capping: bool = False
+    adaptive_capping_slackfactor: float | None = None
+    runtime_cutoff: int | None = None
+
+    # Budgets
+    min_budget: float | int | None = None
+    max_budget: float | int | None = None
+
+    # Others
+    seed: int = 0
+    n_workers: int = 1
+
+    def __post_init__(self) -> None:
+        """Checks whether the config is valid."""
+        # Use random seed if seed is -1
+        if self.seed == -1:
+            seed = random.randint(0, 999999)
+            object.__setattr__(self, "seed", seed)
+
+        # Transform instances to string if they are not
+        if self.instances is not None:
+            instances = [str(instance) for instance in self.instances]
+            object.__setattr__(self, "instances", instances)
+
+        # Transform instance features to string if they are not
+        if self.instance_features is not None:
+            instance_features = {str(instance): features for instance, features in self.instance_features.items()}
+            object.__setattr__(self, "instance_features", instance_features)
+            self._check_instance_features(instance_features)
+
+        # Validate that we have a runtime cutoff set if adaptive capping slackfactor is given
+        if self.adaptive_capping_slackfactor is not None and self.runtime_cutoff is None:
+            raise ValueError("If adaptive_capping_slackfactor is set, then runtime_cutoff must be set as well.")
+
+        valid_warmstart_modes = ("additional", "reduce_budget", "replace")
+        if self.initial_design_warmstart_mode not in valid_warmstart_modes:
+            raise ValueError(
+                f"`initial_design_warmstart_mode` must be one of {valid_warmstart_modes}, "
+                f"got {self.initial_design_warmstart_mode!r}."
+            )
+
+        if self.initial_design_diagnostics not in INITIAL_DESIGN_VALID_DIAGNOSTICS_MODES:
+            raise ValueError(
+                f"`initial_design_diagnostics` must be one of "
+                f"{sorted(INITIAL_DESIGN_VALID_DIAGNOSTICS_MODES)}, "
+                f"got {self.initial_design_diagnostics!r}."
+            )
+
+        if self.objective_weights is not None:
+            n_objectives = self.count_objectives()
+            # Ensure one weight per objective
+            if len(self.objective_weights) != n_objectives:
+                raise ValueError("objective_weights must have the same length as objectives")
+            # Ensure weights are non-negative
+            if any(w < 0 for w in self.objective_weights):
+                raise ValueError("objective_weights must be non-negative")
+
+        # Change directory wrt name and seed
+        self._change_output_directory()
+
+        # Set empty meta
+        object.__setattr__(self, "_meta", {})
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Scenario):
+            # When using __dict__, we make sure to include the meta data.
+            # However, tuples are saved as lists in json. Therefore, we compare the json string
+            # to make sure we have the same conversion.
+            return Scenario.make_serializable(self) == Scenario.make_serializable(other)
+
+        raise RuntimeError("Can only compare scenario objects.")
+
+    @property
+    def meta(self) -> dict[str, Any]:
+        """Returns the meta data of the SMAC run.
+
+        Note
+        ----
+        Meta data are set when the facade is initialized.
+        """
+        return self._meta  # type: ignore
+
+    @staticmethod
+    def _check_instance_features(instance_features: dict[str, list[float]]) -> None:
+        """Checks whether instance features contain only finite values."""
+        for instance, features in instance_features.items():
+            if not np.isfinite(features).all():
+                raise ValueError(
+                    f"Instance features for instance '{instance}' contain non-finite values. "
+                    "Please provide finite numerical instance features before passing them to SMAC."
+                )
+
+    def count_objectives(self) -> int:
+        """Counts the number of objectives."""
+        if isinstance(self.objectives, list):
+            return len(self.objectives)
+
+        return 1
+
+    def count_instance_features(self) -> int:
+        """Counts the number of instance features."""
+        # Check whether key of instance features exist
+        n_features = 0
+        if self.instance_features is not None:
+            for k, v in self.instance_features.items():
+                if self.instances is None or k not in self.instances:
+                    raise RuntimeError(f"Instance {k} is not specified in instances.")
+
+                if n_features == 0:
+                    n_features = len(v)
+                else:
+                    if len(v) != n_features:
+                        raise RuntimeError("Instances must have the same number of features.")
+
+        return n_features
+
+    def save(self) -> None:
+        """Saves internal variables and the configuration space to a file."""
+        if self.meta == {}:
+            logger.warning("Scenario will saved without meta data. Please call the facade first to set meta data.")
+
+        if self.name is None:
+            raise RuntimeError(
+                "Please specify meta data for generating a name. Alternatively, you can specify a name manually."
+            )
+
+        self.output_directory.mkdir(parents=True, exist_ok=True)
+
+        data = {}
+        for k, v in self.__dict__.items():
+            if k in ["configspace", "output_directory"]:
+                continue
+
+            data[k] = v
+
+        # Convert `output_directory`
+        data["output_directory"] = str(self.output_directory)
+
+        # Save everything
+        filename = self.output_directory / "scenario.json"
+        with open(filename, "w") as fh:
+            json.dump(data, fh, indent=4, cls=NumpyEncoder)
+
+        # Save configspace on its own
+        configspace_filename = self.output_directory / "configspace.json"
+        self.configspace.to_json(configspace_filename)
+
+    @staticmethod
+    def load(path: Path) -> Scenario:
+        """Loads a scenario and the configuration space from a file."""
+        filename = path / "scenario.json"
+        with open(filename, "r") as fh:
+            data = json.load(fh)
+
+        # Convert `output_directory` to path object again
+        data["output_directory"] = Path(data["output_directory"])
+        meta = data["_meta"]
+        del data["_meta"]
+
+        # Read configspace
+        configspace_filename = path / "configspace.json"
+        configspace = ConfigurationSpace.from_json(configspace_filename)
+
+        data["configspace"] = configspace
+
+        scenario = Scenario(**data)
+        scenario._set_meta(meta)
+
+        return scenario
+
+    @staticmethod
+    def make_serializable(scenario: Scenario) -> dict[str, Any]:
+        """Makes the scenario serializable."""
+        s = copy.deepcopy(scenario.__dict__)
+        del s["configspace"]
+        s["output_directory"] = str(s["output_directory"])
+
+        return json.loads(json.dumps(s))
+
+    def _change_output_directory(self) -> None:
+        # Create output directory
+        if self.name is not None:
+            new = Path(self.name) / str(self.seed)
+            if not str(self.output_directory).endswith(str(new)):
+                object.__setattr__(self, "output_directory", self.output_directory / new)
+
+    def _set_meta(self, meta: dict[str, Any]) -> None:
+        """Sets the meta data of the SMAC run."""
+        object.__setattr__(self, "_meta", meta)
+
+        # We overwrite name with the hash of the meta (if no name is passed)
+        if self.name is None:
+            hash = hashlib.md5(str(self.__dict__).encode("utf-8")).hexdigest()
+            object.__setattr__(self, "name", hash)
+            self._change_output_directory()
